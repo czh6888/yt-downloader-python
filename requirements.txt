@@ -1,0 +1,5 @@
+yt-dlp>=2024.0.0
+customtkinter>=5.2.0
+pywinstyles>=1.8
+PythonForWindows>=0.4
+cryptography>=42.0.0

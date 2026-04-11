@@ -1,11 +1,9 @@
 """
 YouTube Downloader - Entry point.
-Run the GUI application: python main.py
+Run: python main.py
 """
 
 import sys
-import os
-
 import customtkinter as ctk
 from tkinter import messagebox
 
@@ -17,7 +15,6 @@ from yt_downloader.gui import YouTubeDownloaderGUI
 def main():
     ctk.set_appearance_mode("system")
 
-    # Check yt-dlp first (no admin needed)
     if find_yt_dlp() is None:
         root = ctk.CTk()
         root.withdraw()
@@ -32,7 +29,6 @@ def main():
         root.destroy()
         sys.exit(1)
 
-    # Admin check - warn but don't block
     if not is_admin():
         root = ctk.CTk()
         root.withdraw()

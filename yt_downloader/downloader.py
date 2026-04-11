@@ -99,7 +99,8 @@ def get_resolution_list(info):
     return items
 
 
-def download_video(url, cookie_file, resolution, browser_native=None, save_dir=None, log_callback=None):
+def download_video(url, cookie_file, resolution, browser_native=None, save_dir=None,
+                   log_callback=None, progress_callback=None):
     """Download a YouTube video.
 
     Args:
@@ -109,6 +110,8 @@ def download_video(url, cookie_file, resolution, browser_native=None, save_dir=N
         browser_native: Browser name for --cookies-from-browser, or None
         save_dir: Download directory (default: ~/Videos)
         log_callback: Optional logging callback
+        progress_callback: Optional callback(pct, speed, eta)
+            pct: 0.0-1.0, speed: str, eta: str
 
     Returns:
         subprocess.CompletedProcess
@@ -145,6 +148,8 @@ def download_video(url, cookie_file, resolution, browser_native=None, save_dir=N
         log_callback(f"Command: {' '.join(cmd)}")
         log_callback("-" * 50)
 
+    import re
+
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -154,11 +159,27 @@ def download_video(url, cookie_file, resolution, browser_native=None, save_dir=N
         errors="replace",
     )
 
+    progress_re = re.compile(
+        r'\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\w+)\s+at\s+([\d.]+\w+/s)\s+ETA\s+(.+)'
+    )
+    progress_re2 = re.compile(r'\[download\]\s+([\d.]+)%')
+
     for line in process.stdout:
+        line = line.rstrip()
         if log_callback:
-            log_callback(line.rstrip())
-        else:
-            print(line.rstrip())
+            log_callback(line)
+
+        if progress_callback:
+            m = progress_re.search(line) or progress_re2.search(line)
+            if m:
+                pct = float(m.group(1)) / 100.0
+                if m.lastindex >= 3:
+                    speed = m.group(3)
+                    eta = m.group(4)
+                else:
+                    speed = ""
+                    eta = ""
+                progress_callback(pct, speed, eta)
 
     process.wait()
     return process

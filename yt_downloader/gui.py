@@ -1,272 +1,416 @@
 """
-YouTube Downloader GUI - CustomTkinter + pywinstyles (Apple/Fluent Design)
+YouTube Downloader GUI
+
+- Solid backgrounds, no fake acrylic
+- Large pill buttons (corner_radius=20)
+- Apple Blue (#0071e3) only accent
+- DPI-aware sizing for 4K screens
+- Real download progress bar with %, speed, ETA
+- Log in separate window
 """
 
 import os
 import sys
 import threading
 import traceback
-import ctypes
 import tkinter as tk
 
 import customtkinter as ctk
-import pywinstyles
 
 from yt_downloader.browser_cookies import extract_cookies, is_admin
-from yt_downloader.downloader import find_yt_dlp, fetch_formats, get_resolution_list, download_video
+from yt_downloader.downloader import (
+    find_yt_dlp, fetch_formats, get_resolution_list, download_video,
+)
 
+# ── Colors ────────────────────────────────────────────────────────
+APPLE_BLUE = "#0071e3"
+GREEN = "#34C759"
+
+LIGHT = {
+    "bg":        "#FFFFFF",
+    "surface":   "#F5F5F7",
+    "primary":   "#1D1D1F",
+    "secondary": "#6E6E73",
+    "divider":   "#E5E5EA",
+    "entry_bg":  "#F5F5F7",
+    "progress_bg": "#E5E5EA",
+}
+
+DARK = {
+    "bg":        "#1A1A1A",
+    "surface":   "#2C2C2E",
+    "primary":   "#F5F5F7",
+    "secondary": "#98989D",
+    "divider":   "#38383A",
+    "entry_bg":  "#2C2C2E",
+    "progress_bg": "#38383A",
+}
+
+PADDING = 28
+PILL_RADIUS = 20
+ENTRY_RADIUS = 12
+
+FONT_TITLE = ("Segoe UI", 18)
+FONT_BODY = ("Segoe UI", 13)
+FONT_SMALL = ("Segoe UI", 11)
+FONT_CODE = ("Consolas", 9)
+FONT_PROGRESS = ("Segoe UI", 11)
+
+
+# ── Log Window ────────────────────────────────────────────────────
+
+class LogWindow(ctk.CTkToplevel):
+    def __init__(self, master, colors):
+        super().__init__(master)
+        self.title("Log")
+        self.geometry("500x340")
+        self.minsize(380, 220)
+        self._c = colors
+        self._build()
+
+    def _build(self):
+        C = self._c
+        frame = ctk.CTkFrame(self, fg_color=C["bg"], corner_radius=0)
+        frame.pack(fill="both", expand=True)
+
+        hdr = ctk.CTkFrame(frame, fg_color="transparent", height=44)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        ctk.CTkLabel(
+            hdr, text="Log", font=FONT_BODY, text_color=C["primary"],
+        ).pack(side="left", padx=16, pady=12)
+        ctk.CTkButton(
+            hdr, text="✕", width=24, height=24, corner_radius=12,
+            fg_color="transparent", hover_color=C["surface"],
+            text_color=C["secondary"], command=self.destroy,
+            font=("Segoe UI", 10),
+        ).pack(side="right", padx=12, pady=10)
+
+        ctk.CTkFrame(frame, fg_color=C["divider"], height=1).pack(fill="x")
+
+        self.text = tk.Text(
+            frame, wrap="word", state="disabled", font=FONT_CODE,
+            bg=C["entry_bg"], fg=C["primary"],
+            borderwidth=0, highlightthickness=0, relief="flat",
+            selectbackground=APPLE_BLUE,
+        )
+        self.text.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        sb = tk.Scrollbar(self.text, orient="vertical", command=self.text.yview)
+        self.text.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+
+    def log(self, msg):
+        self.text.configure(state="normal")
+        self.text.insert("end", msg + "\n")
+        self.text.see("end")
+        self.text.configure(state="disabled")
+        self.update_idletasks()
+
+
+# ── Resolution Modal ──────────────────────────────────────────────
+
+class ResolutionDialog(ctk.CTkToplevel):
+    def __init__(self, master, title, resolutions, colors):
+        super().__init__(master)
+        self.title("Choose Quality")
+        self.resolutions = resolutions
+        self._c = colors
+        self._result = None
+        self.res_var = tk.StringVar(value="best")
+
+        px = master.winfo_rootx()
+        py = master.winfo_rooty()
+        pw = master.winfo_width()
+        ph = master.winfo_height()
+        self.geometry(f"+{px + pw // 2 - 180}+{py + ph // 2 - 210}")
+
+        self._build(title)
+        self.grab_set()
+        self.transient(master)
+        self.wait_window()
+
+    def _build(self, title):
+        C = self._c
+        self.geometry("360x440")
+        self.resizable(False, False)
+
+        bg = ctk.CTkFrame(self, fg_color=C["bg"], corner_radius=0)
+        bg.pack(fill="both", expand=True)
+
+        # Header
+        hdr = ctk.CTkFrame(bg, fg_color="transparent", height=48)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        ctk.CTkLabel(
+            hdr, text="Quality", font=("Segoe UI", 15),
+            text_color=C["primary"],
+        ).pack(side="left", padx=20, pady=14)
+        ctk.CTkButton(
+            hdr, text="✕", width=24, height=24, corner_radius=12,
+            fg_color="transparent", hover_color=C["surface"],
+            text_color=C["secondary"], command=self._close,
+            font=("Segoe UI", 10),
+        ).pack(side="right", padx=16, pady=12)
+
+        ctk.CTkFrame(bg, fg_color=C["divider"], height=1).pack(fill="x")
+
+        # Video title
+        ctk.CTkLabel(
+            bg, text=title, wraplength=300,
+            font=FONT_SMALL, text_color=C["secondary"],
+            justify="left",
+        ).pack(fill="x", padx=20, pady=(12, 4))
+
+        # Radio list
+        scroll = ctk.CTkScrollableFrame(bg, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=20, pady=(8, 12))
+
+        self._radio(scroll, "Best quality available", "best")
+        for height, label in self.resolutions:
+            self._radio(scroll, label, str(height))
+
+        ctk.CTkFrame(bg, fg_color=C["divider"], height=1).pack(fill="x")
+
+        ctk.CTkButton(
+            bg, text="Download",
+            font=("Segoe UI", 14), height=42, corner_radius=PILL_RADIUS,
+            fg_color=APPLE_BLUE, hover_color="#006DD8",
+            text_color="#FFFFFF", command=self._ok,
+        ).pack(fill="x", padx=20, pady=(12, 16))
+
+    def _radio(self, parent, text, value):
+        ctk.CTkRadioButton(
+            parent, text=text, variable=self.res_var, value=value,
+            font=FONT_BODY, text_color=self._c["primary"],
+        ).pack(anchor="w", pady=(6, 2))
+
+    def _ok(self):
+        self._result = self.res_var.get()
+        self.destroy()
+
+    def _close(self):
+        self._result = None
+        self.destroy()
+
+    @property
+    def result(self):
+        return self._result
+
+
+# ── Main App ──────────────────────────────────────────────────────
 
 class YouTubeDownloaderGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("YouTube Downloader")
-        self.root.geometry("580x720")
-        self.root.minsize(480, 600)
-        self.root.resizable(True, True)
 
-        # DPI awareness
+        # DPI-aware sizing
+        self._scale = self._detect_scale()
+        w = int(600 * self._scale)
+        h = int(400 * self._scale)
+        self.root.geometry(f"{w}x{h}")
+        self.root.minsize(int(440 * self._scale), int(340 * self._scale))
+
         try:
             from ctypes import windll
             windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
 
-        # CustomTkinter setup
-        ctk.set_appearance_mode("system")
-        ctk.set_default_color_theme("blue")
+        self._dark = ctk.get_appearance_mode() == "Dark"
+        self.c = DARK if self._dark else LIGHT
 
-        # State
         self.cookie_file = os.path.join(os.environ["TEMP"], "yt_cookies_gui.txt")
-        self.selected_format_id = None
-        self.video_info = None
         self.browser_native = None
+        self.log_win = None
+        self.busy = False
 
-        self._setup_mica()
-        self._build_ui()
+        # Progress state
+        self.dl_progress = 0.0
+        self.dl_speed = ""
+        self.dl_eta = ""
 
-    def _setup_mica(self):
-        """Apply Win11 Mica material (Fluent Design frosted glass)."""
-        self.root.update()
+        self._build()
+
+    def _detect_scale(self):
+        """Detect Windows display scale. Returns 1.75 for 4K at 175%."""
         try:
-            pywinstyles.apply_style(self.root, "mica")
-            pywinstyles.change_header_color(self.root, "transparent")
+            import ctypes as _ct
+            root = tk.Tk()
+            root.withdraw()
+            # Set DPI awareness so GetSystemMetrics returns physical pixels
+            try:
+                _ct.windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                pass
+            phys_w = _ct.windll.user32.GetSystemMetrics(0)  # SM_CXSCREEN
+            logical_w = root.winfo_screenwidth()
+            root.destroy()
+            scale = phys_w / logical_w if logical_w > 0 else 1.0
+            return max(1.0, min(scale, 2.5))
         except Exception:
-            pass
+            return 1.0
 
-    def _build_ui(self):
-        """Apple-style single-column card layout."""
-        # Detect theme
-        self._is_dark = ctk.get_appearance_mode() == "Dark"
+    # ── Build ─────────────────────────────────────────────────────
 
-        # Card background colors
-        self._card_bg = "#2B2B2B" if self._is_dark else "#F2F2F7"
-        self._log_bg = "#222222" if self._is_dark else "#F2F2F7"
-        self._log_fg = "#E5E5E5" if self._is_dark else "#1D1D1F"
-        self._text_secondary = "#8E8E93" if self._is_dark else "#86868B"
-        self._text_primary = "#FFFFFF" if self._is_dark else "#1D1D1F"
+    def _build(self):
+        C = self.c
 
-        # Main scrollable frame
-        self.main_frame = ctk.CTkScrollableFrame(
-            self.root, corner_radius=0, fg_color="transparent"
-        )
-        self.main_frame.pack(fill="both", expand=True, padx=24, pady=20)
+        bg = ctk.CTkFrame(self.root, fg_color=C["bg"], corner_radius=0)
+        bg.pack(fill="both", expand=True)
 
-        # ---- Title Area ----
-        title_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        title_frame.pack(fill="x", pady=(0, 16))
+        # ── Header ──
+        hdr = ctk.CTkFrame(bg, fg_color="transparent")
+        hdr.pack(fill="x", padx=PADDING, pady=(24, 0))
 
         ctk.CTkLabel(
-            title_frame,
-            text="YouTube Downloader",
-            font=ctk.CTkFont(family="Microsoft YaHei UI", size=22, weight="bold"),
+            hdr, text="YouTube Downloader",
+            font=FONT_TITLE, text_color=C["primary"],
         ).pack(anchor="w")
 
-        status_text = "Administrator" if is_admin() else "Standard User"
-        status_color = "#34C759" if is_admin() else "#FF9500"
+        st = "Administrator" if is_admin() else "Standard"
+        sc = GREEN if is_admin() else "#FF9500"
         ctk.CTkLabel(
-            title_frame,
-            text=f"\u25cf {status_text}",
-            text_color=status_color,
-            font=ctk.CTkFont(family="Microsoft YaHei UI", size=11),
+            hdr, text=f"● {st}", text_color=sc,
+            font=FONT_SMALL,
         ).pack(anchor="w", pady=(2, 0))
 
-        # ---- Browser Selection ----
-        self._section_label("Browser")
+        # ── Content ──
+        main = ctk.CTkFrame(bg, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=PADDING, pady=24)
+
+        # Browser label + pills
+        ctk.CTkLabel(
+            main, text="Browser",
+            font=FONT_SMALL, text_color=C["secondary"],
+        ).pack(anchor="w", pady=(0, 4))
+
+        pills = ctk.CTkFrame(main, fg_color="transparent")
+        pills.pack(fill="x", pady=(0, 16))
+
         self.browser_var = tk.StringVar(value="Chrome")
+        for browser in ["Chrome", "Edge", "Firefox"]:
+            ctk.CTkRadioButton(
+                pills, text=browser,
+                variable=self.browser_var, value=browser,
+                font=FONT_BODY, text_color=C["primary"],
+            ).pack(side="left", padx=(0, 20))
 
-        browser_row = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        browser_row.pack(fill="x", pady=(0, 2))
-
-        for i, browser in enumerate(["Chrome", "Edge", "Firefox"]):
-            rb = ctk.CTkRadioButton(
-                browser_row,
-                text=browser,
-                variable=self.browser_var,
-                value=browser,
-                font=ctk.CTkFont(family="Microsoft YaHei UI", size=13),
-                command=self._on_browser_change,
-            )
-            rb.pack(side="left", padx=(0, 20))
-
-        # ---- URL Input ----
-        self._section_label("Video URL")
-
-        url_card = ctk.CTkFrame(self.main_frame, fg_color=self._card_bg, corner_radius=12)
-        url_card.pack(fill="x", pady=(0, 16))
+        # URL label + entry
+        ctk.CTkLabel(
+            main, text="URL",
+            font=FONT_SMALL, text_color=C["secondary"],
+        ).pack(anchor="w", pady=(0, 4))
 
         self.url_var = tk.StringVar()
         self.url_entry = ctk.CTkEntry(
-            url_card,
-            textvariable=self.url_var,
+            main, textvariable=self.url_var,
             placeholder_text="https://www.youtube.com/watch?v=...",
-            font=ctk.CTkFont(family="Consolas", size=13),
-            corner_radius=10,
-            height=44,
-            border_width=0,
+            font=FONT_CODE, height=int(42 * self._scale), corner_radius=ENTRY_RADIUS,
+            border_width=0, fg_color=C["entry_bg"],
+            text_color=C["primary"],
         )
-        self.url_entry.pack(fill="x", padx=12, pady=10)
-        self.url_entry.bind("<Return>", lambda e: self.fetch_video_info())
+        self.url_entry.pack(fill="x", pady=(0, 14))
+        self.url_entry.bind("<Return>", lambda e: self._go())
 
-        # ---- Fetch Button ----
-        self.fetch_btn = ctk.CTkButton(
-            self.main_frame,
-            text="Fetch",
-            font=ctk.CTkFont(family="Microsoft YaHei UI", size=14, weight="bold"),
-            height=44,
-            corner_radius=22,
-            command=self.fetch_video_info,
+        # ── Progress area (hidden until download) ──
+        self.progress_frame = ctk.CTkFrame(main, fg_color="transparent")
+
+        self.progress_bar = ctk.CTkProgressBar(
+            self.progress_frame, height=8, corner_radius=4,
+            progress_color=APPLE_BLUE, fg_color=C["progress_bg"],
         )
-        self.fetch_btn.pack(fill="x", pady=(0, 8))
+        self.progress_bar.pack(fill="x")
+        self.progress_bar.set(0)
 
-        # ---- Status ----
+        info_row = ctk.CTkFrame(self.progress_frame, fg_color="transparent")
+        info_row.pack(fill="x", pady=(4, 0))
+
+        self.progress_pct_label = ctk.CTkLabel(
+            info_row, text="0%",
+            font=FONT_PROGRESS, text_color=C["primary"],
+        )
+        self.progress_pct_label.pack(side="left")
+
+        self.progress_detail = ctk.CTkLabel(
+            info_row, text="",
+            font=("Segoe UI", 10), text_color=C["secondary"],
+        )
+        self.progress_detail.pack(side="right")
+
+        # ── Status row ──
+        srow = ctk.CTkFrame(main, fg_color="transparent")
+        srow.pack(fill="x", pady=(14, 0))
+
         self.status_label = ctk.CTkLabel(
-            self.main_frame,
-            text="Ready",
-            text_color=self._text_secondary,
-            font=ctk.CTkFont(family="Microsoft YaHei UI", size=11),
+            srow, text="Paste a URL and press Download",
+            font=FONT_SMALL, text_color=C["secondary"],
         )
-        self.status_label.pack(anchor="w", pady=(0, 12))
+        self.status_label.pack(side="left", pady=4)
 
-        # ---- Progress ----
-        self.progress = ctk.CTkProgressBar(self.main_frame, height=4, corner_radius=2)
-        self.progress.pack(fill="x", pady=(0, 12))
-        self.progress.set(0)
+        ctk.CTkButton(
+            srow, text="Log",
+            font=("Segoe UI", 10), width=50, height=22, corner_radius=11,
+            fg_color="transparent", hover_color=C["surface"],
+            text_color=C["secondary"], command=self._open_log,
+        ).pack(side="right")
 
-        # ---- Log ----
-        self._section_label("Log")
-        log_card = ctk.CTkFrame(
-            self.main_frame, fg_color=self._card_bg, corner_radius=12
+        # ── Download button ──
+        self.action_btn = ctk.CTkButton(
+            main, text="Download",
+            font=("Segoe UI", 14), height=int(42 * self._scale),
+            corner_radius=PILL_RADIUS,
+            fg_color=APPLE_BLUE, hover_color="#006DD8",
+            text_color="#FFFFFF", command=self._go,
         )
-        log_card.pack(fill="both", expand=False, pady=(0, 16))
+        self.action_btn.pack(fill="x", pady=(14, 0))
 
-        self.log_text = tk.Text(
-            log_card,
-            height=6,
-            wrap="word",
-            state="disabled",
-            font=("Consolas", 9),
-            bg=self._log_bg,
-            fg=self._log_fg,
-            borderwidth=0,
-            highlightthickness=0,
-            relief="flat",
-            selectbackground="#007AFF",
-        )
-        self.log_text.pack(fill="both", expand=True, padx=12, pady=10)
-        self._configure_scrollbar()
+    # ── Progress update ───────────────────────────────────────────
 
-        # ---- Resolution Selection ----
-        self._section_label("Resolution")
-        res_card = ctk.CTkFrame(
-            self.main_frame, fg_color=self._card_bg, corner_radius=12
-        )
-        res_card.pack(fill="x", pady=(0, 16))
+    def _update_progress(self, pct, speed, eta):
+        self.dl_progress = pct
+        self.dl_speed = speed
+        self.dl_eta = eta
+        self.progress_bar.set(pct)
+        pct_str = f"{pct * 100:.1f}%"
+        self.progress_pct_label.configure(text=pct_str)
+        detail = f"{speed} · {eta}" if speed else ""
+        self.progress_detail.configure(text=detail)
 
-        self.res_scroll = ctk.CTkScrollableFrame(
-            res_card, fg_color="transparent", corner_radius=0
-        )
-        self.res_scroll.pack(fill="x", padx=12, pady=10)
+    def _reset_progress(self):
+        self.progress_bar.set(0)
+        self.progress_pct_label.configure(text="0%")
+        self.progress_detail.configure(text="")
+        self.dl_progress = 0.0
+        self.dl_speed = ""
+        self.dl_eta = ""
 
-        self.resolution_var = tk.StringVar(value="best")
-        self.res_placeholder = ctk.CTkLabel(
-            self.res_scroll,
-            text='Click "Fetch" to load resolutions...',
-            text_color=self._text_secondary,
-            font=ctk.CTkFont(family="Microsoft YaHei UI", size=12),
-        )
-        self.res_placeholder.pack(anchor="w", pady=8)
+    # ── Helpers ───────────────────────────────────────────────────
 
-        # ---- Download Button ----
-        self.download_btn = ctk.CTkButton(
-            self.main_frame,
-            text="Download",
-            font=ctk.CTkFont(family="Microsoft YaHei UI", size=14, weight="bold"),
-            height=44,
-            corner_radius=22,
-            command=self.start_download,
-            state="disabled",
-            fg_color="#007AFF",
-            hover_color="#0055CC",
-        )
-        self.download_btn.pack(fill="x", pady=(0, 8))
+    def _open_log(self):
+        if self.log_win is None or not self.log_win.winfo_exists():
+            self.log_win = LogWindow(self.root, self.c)
+            self.log_win.deiconify()
+        else:
+            self.log_win.focus()
 
-        self.folder_btn = ctk.CTkButton(
-            self.main_frame,
-            text="Open Download Folder",
-            font=ctk.CTkFont(family="Microsoft YaHei UI", size=13),
-            height=40,
-            corner_radius=20,
-            command=self.open_download_folder,
-            fg_color="transparent",
-            hover_color=self._text_secondary,
-            text_color=self._text_primary,
-        )
-        self.folder_btn.pack(fill="x")
-
-        # ---- Spacer ----
-        ctk.CTkFrame(self.main_frame, fg_color="transparent", height=20).pack(fill="x")
-
-    def _configure_scrollbar(self):
-        """Add scrollbar to log text."""
-        scrollbar = tk.Scrollbar(
-            self.log_text,
-            orient="vertical",
-            command=self.log_text.yview,
-        )
-        self.log_text.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-
-    def _section_label(self, text):
-        """Apple-style section heading."""
-        ctk.CTkLabel(
-            self.main_frame,
-            text=text,
-            font=ctk.CTkFont(family="Microsoft YaHei UI", size=15, weight="bold"),
-            text_color=self._text_primary,
-        ).pack(anchor="w", pady=(12, 4))
-
-    def _on_browser_change(self):
-        """Update UI when browser selection changes."""
-        pass
-
-    def log(self, msg):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", msg + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+    def _log(self, msg):
+        if self.log_win and self.log_win.winfo_exists():
+            self.log_win.log(msg)
         self.root.update_idletasks()
 
-    def set_status(self, msg):
+    def _status(self, msg):
         self.status_label.configure(text=msg)
 
-    def set_progress(self, running=False):
-        if running:
-            self.progress.start()
-        else:
-            self.progress.stop()
-            self.progress.set(0)
+    def _reset(self):
+        self.busy = False
+        self.action_btn.configure(state="normal", text="Download")
+        self._reset_progress()
+        self.progress_frame.pack_forget()
+        # Restore status text
+        self._status("Paste a URL and press Download")
 
-    def fetch_video_info(self):
+    def _go(self):
         url = self.url_var.get().strip()
         if not url:
             self.root.bell()
@@ -275,143 +419,93 @@ class YouTubeDownloaderGUI:
 
         browser = self.browser_var.get()
         if browser == "Edge" and not is_admin():
-            self.root.bell()
+            self._log("Edge requires Administrator privileges.")
+            self._status("Edge requires admin — restart as Administrator")
             return
-        if browser == "Chrome" and not is_admin():
-            # Show warning in log instead of popup
-            self.log("Note: Chrome works without admin via chromelevator (may be slower)")
 
-        self.fetch_btn.configure(state="disabled")
-        self.download_btn.configure(state="disabled")
-        self.set_status("Extracting cookies...")
-        self.set_progress(True)
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.configure(state="disabled")
+        if self.busy:
+            return
+        self.busy = True
+
+        self.action_btn.configure(state="disabled", text="Loading…")
+        self._status("Extracting cookies…")
+        self._reset_progress()
 
         def worker():
             try:
                 use_cookie_file, browser_native = extract_cookies(
                     browser, self.cookie_file,
-                    log_callback=lambda m: self.root.after(0, self.log, m),
+                    log_callback=lambda m: self.root.after(0, self._log, m),
                 )
                 self.browser_native = browser_native
                 cookie_file = self.cookie_file if use_cookie_file else None
                 bn = browser_native if not use_cookie_file else None
 
-                self.root.after(0, self.set_status, "Fetching video info...")
+                self.root.after(0, self._status, "Fetching video info…")
                 info = fetch_formats(
-                    url, cookie_file,
-                    browser_native=bn,
-                    log_callback=lambda m: self.root.after(0, self.log, m),
+                    url, cookie_file, browser_native=bn,
+                    log_callback=lambda m: self.root.after(0, self._log, m),
                 )
-                self.video_info = info
-                title = info.get("title", "Unknown")
-                self.root.after(0, self.log, f"Title: {title}")
 
+                title = info.get("title", "Unknown")
                 resolutions = get_resolution_list(info)
-                self.root.after(0, self.set_status, f"Found {len(resolutions)} resolutions")
-                self.root.after(0, lambda: self.populate_resolutions(resolutions))
-                self.root.after(0, self.download_btn.configure, {"state": "normal"})
+
+                def show_modal():
+                    dlg = ResolutionDialog(self.root, title, resolutions, self.c)
+                    resolution = dlg.result
+                    if resolution:
+                        self.root.after(0, lambda: self._download(
+                            url, cookie_file, bn, resolution, title,
+                        ))
+                    else:
+                        self.root.after(0, self._reset)
+
+                self.root.after(0, show_modal)
 
             except Exception as e:
-                self.root.after(0, self.log, f"ERROR: {e}")
-                self.root.after(0, self.log, traceback.format_exc())
-                self.root.after(0, self.set_status, "Failed")
-            finally:
-                self.root.after(0, self.fetch_btn.configure, {"state": "normal"})
-                self.root.after(0, self.set_progress, False)
+                self.root.after(0, self._log, f"ERROR: {e}")
+                self.root.after(0, self._log, traceback.format_exc())
+                self.root.after(0, self._status, "Failed")
+                self.root.after(0, self._reset)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _restart_as_admin(self):
-        """Restart the GUI with admin privileges."""
-        script = os.path.abspath(sys.argv[0])
-        params = " ".join([f'"{a}"' for a in sys.argv[1:]])
-        python_exe = sys.executable
-        ret = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", python_exe, f'"{script}" {params}', None, 1
-        )
-        if int(ret) <= 32:
-            self.log("Failed to restart as Administrator.")
-        else:
-            self.root.destroy()
-
-    def populate_resolutions(self, resolutions):
-        for widget in self.res_scroll.winfo_children():
-            widget.destroy()
-
-        # "Best" option
-        rb = ctk.CTkRadioButton(
-            self.res_scroll,
-            text="Best quality available",
-            variable=self.resolution_var,
-            value="best",
-            font=ctk.CTkFont(family="Microsoft YaHei UI", size=12),
-        )
-        rb.pack(anchor="w", pady=2)
-        self.resolution_var.set("best")
-
-        for height, res_label in resolutions:
-            rb = ctk.CTkRadioButton(
-                self.res_scroll,
-                text=res_label,
-                variable=self.resolution_var,
-                value=str(height),
-                font=ctk.CTkFont(family="Microsoft YaHei UI", size=12),
-            )
-            rb.pack(anchor="w", pady=2)
-
-    def start_download(self):
-        url = self.url_var.get().strip()
-        if not url:
-            self.root.bell()
-            self.url_entry.focus()
-            return
-
-        resolution = self.resolution_var.get()
-        self.download_btn.configure(state="disabled")
-        self.set_status("Starting download...")
-        self.set_progress(True)
+    def _download(self, url, cookie_file, bn, resolution, title):
+        # Show progress bar
+        self.progress_frame.pack(fill="x", pady=(0, 12), before=self.status_label.master)
+        self._status(f"Downloading: {title[:50]}…")
+        self._reset_progress()
 
         def worker():
             try:
-                cookie_file = self.cookie_file if os.path.exists(self.cookie_file) else None
-                bn = self.browser_native if not cookie_file else None
-
                 process = download_video(
-                    url=url,
-                    cookie_file=cookie_file,
-                    resolution=resolution,
-                    browser_native=bn,
-                    log_callback=lambda m: self.root.after(0, self.log, m),
+                    url=url, cookie_file=cookie_file,
+                    resolution=resolution, browser_native=bn,
+                    log_callback=lambda m: self.root.after(0, self._log, m),
+                    progress_callback=lambda pct, spd, eta: self.root.after(
+                        0, self._update_progress, pct, spd, eta
+                    ),
                 )
 
                 if process.returncode == 0:
-                    self.root.after(0, self.log, "\u2500" * 50)
-                    self.root.after(0, self.log, "Download complete!")
-                    self.root.after(0, self.set_status, "Download complete!")
+                    self.root.after(0, self._update_progress, 1.0, "", "")
+                    self.root.after(0, self._log, "Download complete!")
+                    self.root.after(0, self._status, "Download complete!")
                 else:
-                    self.root.after(0, self.log, "\u2500" * 50)
-                    self.root.after(0, self.log, f"Download failed (code {process.returncode})")
-                    self.root.after(0, self.set_status, "Download failed")
+                    self.root.after(0, self._log, f"Failed (code {process.returncode})")
+                    self.root.after(0, self._status, f"Failed (exit {process.returncode})")
 
             except Exception as e:
-                self.root.after(0, self.log, f"ERROR: {e}")
-                self.root.after(0, self.set_status, "Error")
+                self.root.after(0, self._log, f"ERROR: {e}")
+                self.root.after(0, self._status, "Error")
             finally:
-                self.root.after(0, self.download_btn.configure, {"state": "normal"})
-                self.root.after(0, self.set_progress, False)
+                self.root.after(0, self._reset)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def open_download_folder(self):
-        save_dir = os.path.join(os.environ["USERPROFILE"], "Videos")
-        os.makedirs(save_dir, exist_ok=True)
-        os.startfile(save_dir)
-
 
 def main():
+    ctk.set_appearance_mode("system")
     root = ctk.CTk()
     YouTubeDownloaderGUI(root)
     root.mainloop()
