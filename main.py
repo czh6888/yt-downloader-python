@@ -4,7 +4,9 @@ Run the GUI application: python main.py
 """
 
 import sys
-import tkinter as tk
+import os
+
+import customtkinter as ctk
 from tkinter import messagebox
 
 from yt_downloader.browser_cookies import is_admin, elevate
@@ -13,9 +15,11 @@ from yt_downloader.gui import YouTubeDownloaderGUI
 
 
 def main():
+    ctk.set_appearance_mode("system")
+
     # Check yt-dlp first (no admin needed)
     if find_yt_dlp() is None:
-        root = tk.Tk()
+        root = ctk.CTk()
         root.withdraw()
         messagebox.showerror(
             "Missing Dependency",
@@ -28,13 +32,23 @@ def main():
         root.destroy()
         sys.exit(1)
 
-    # Check admin for Chrome/Edge cookie decryption
+    # Admin check - warn but don't block
     if not is_admin():
-        print("Requesting Administrator privileges (UAC)...")
-        elevate()
-        return
+        root = ctk.CTk()
+        root.withdraw()
+        result = messagebox.askyesno(
+            "Administrator Recommended",
+            "YouTube cookie decryption works best with Administrator privileges.\n\n"
+            "Without admin, Chrome/Edge extraction falls back to a slower method.\n\n"
+            "Run as Administrator now?",
+        )
+        root.destroy()
+        if result:
+            print("Requesting Administrator privileges (UAC)...")
+            elevate()
+            return
 
-    root = tk.Tk()
+    root = ctk.CTk()
     app = YouTubeDownloaderGUI(root)
     root.mainloop()
 
