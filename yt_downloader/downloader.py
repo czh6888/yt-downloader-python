@@ -10,14 +10,10 @@ import sys
 
 
 def find_yt_dlp():
-    """Find yt-dlp executable. Prefers system yt-dlp command."""
-    if shutil.which("yt-dlp"):
-        return [shutil.which("yt-dlp")]
-    if shutil.which("yt-dlp.exe"):
-        return [shutil.which("yt-dlp.exe")]
-    if subprocess.run([sys.executable, "-m", "yt_dlp", "--version"],
-                      capture_output=True).returncode == 0:
-        return [sys.executable, "-m", "yt_dlp"]
+    """Find yt-dlp system executable only."""
+    path = shutil.which("yt-dlp") or shutil.which("yt-dlp.exe")
+    if path:
+        return [path]
     return None
 
 
