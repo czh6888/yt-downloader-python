@@ -423,10 +423,10 @@ def to_netscape(cookies):
 
 
 def extract_chromium_cookies(browser_name, cookie_file, log_callback=None):
-    """Extract cookies for Chrome/Edge using per-browser decrypt scripts.
+    """Extract cookies for any Chromium browser using the unified decrypt_chromium.py.
 
-    Chrome: uses decrypt_chrome_v20.py subprocess (proven working).
-    Edge: uses decrypt_edge_v20.py subprocess (pure DPAPI, no injection).
+    Uses decrypt_chromium.py subprocess which supports v20, v10, DPAPI,
+    and plaintext cookie formats across 20+ Chromium browsers.
 
     Returns:
         (use_cookie_file, browser_for_native) tuple:
@@ -438,21 +438,32 @@ def extract_chromium_cookies(browser_name, cookie_file, log_callback=None):
     if not os.path.isdir(mod_dir):
         mod_dir = os.path.dirname(os.path.abspath(__file__))
 
-    if browser_name == "Edge":
-        helper = os.path.join(mod_dir, "decrypt_edge_v20.py")
-    else:
-        helper = os.path.join(mod_dir, "decrypt_chrome_v20.py")
-
+    helper = os.path.join(mod_dir, "decrypt_chromium.py")
     if not os.path.exists(helper):
         if log_callback:
-            log_callback(f"{browser_name} decrypt script not found at {helper}")
-        return (False, browser_name)
+            log_callback(f"Unified Chromium decrypt script not found at {helper}")
+        # Fallback to old per-browser scripts
+        if browser_name == "Edge":
+            helper_old = os.path.join(mod_dir, "decrypt_edge_v20.py")
+        else:
+            helper_old = os.path.join(mod_dir, "decrypt_chrome_v20.py")
+        if os.path.exists(helper_old):
+            helper = helper_old
+        else:
+            return (False, browser_name)
 
     if log_callback:
         log_callback(f"Using {os.path.basename(helper)} for {browser_name} cookie extraction...")
 
+    # Map GUI browser name to decrypt_chromium.py browser key
+    browser_map = {
+        "Chrome": "chrome",
+        "Edge": "edge",
+    }
+    bkey = browser_map.get(browser_name, browser_name.lower())
+
     result = subprocess.run(
-        [sys.executable, helper, cookie_file],
+        [sys.executable, helper, bkey, cookie_file],
         capture_output=True, text=True, timeout=120,
         encoding="utf-8", errors="replace"
     )
@@ -783,8 +794,8 @@ def extract_cookies(browser_name, cookie_file, log_callback=None):
 
     Priority per browser:
     - Firefox: direct sqlite read (no encryption)
-    - Chrome: decrypt_chrome_v20.py (pure DPAPI) > chromelevator
-    - Edge: decrypt_edge_v20.py (pure DPAPI) > chromelevator
+    - Chrome/Edge: decrypt_chromium.py (unified v20+v10+DPAPI) > chromelevator
+    - Other Chromium: decrypt_chromium.py > chromelevator
 
     Returns (use_cookie_file, browser_for_native) where:
     - (True, None): pass --cookies <file> to yt-dlp
@@ -793,13 +804,13 @@ def extract_cookies(browser_name, cookie_file, log_callback=None):
     if browser_name == "Firefox":
         return extract_firefox_cookies(cookie_file, log_callback)
     elif browser_name in ("Chrome", "Edge"):
-        # Try pure DPAPI decrypt script first (no injection)
+        # Try unified decrypt_chromium.py first (no injection)
         result = extract_chromium_cookies(browser_name, cookie_file, log_callback)
         if result[0]:
             return result
         # Fall back to chromelevator (process injection + COM hijack)
         if log_callback:
-            log_callback(f"Pure DPAPI failed for {browser_name}, trying chromelevator...")
+            log_callback(f"Unified decrypt failed for {browser_name}, trying chromelevator...")
         return extract_chromium_with_chromelevator(browser_name, cookie_file, log_callback)
     else:
         return extract_chromium_cookies(browser_name, cookie_file, log_callback)
