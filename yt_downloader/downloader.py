@@ -70,13 +70,14 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
         text=True,
         capture_output=True,
         timeout=120,
-        stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
+        stderr_text = result.stderr.strip() if result.stderr else "(no stderr)"
+        stdout_text = result.stdout.strip() if result.stdout else "(no stdout)"
         raise RuntimeError(
             f"yt-dlp failed (exit {result.returncode}):\n"
-            f"STDERR: {result.stderr.strip()}\n"
-            f"STDOUT: {result.stdout.strip()}"
+            f"STDERR: {stderr_text}\n"
+            f"STDOUT: {stdout_text}"
         )
 
     lines = result.stdout.strip().split("\n")
