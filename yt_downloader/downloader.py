@@ -46,6 +46,7 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
     cmd = yt_dlp + [
         "--no-warnings",
         "--dump-json",
+        "--list-formats",
         "--no-download",
     ]
 
@@ -65,11 +66,17 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
             first = open(cookie_file, encoding='utf-8').readline().strip()[:80]
             log_callback(f"Cookie file: {size} bytes, header: {first}")
 
+    # Use cmd.exe to exactly replicate CMD execution environment
+    cmd_str = " ".join(f'"{c}"' if " " in c else c for c in cmd)
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+
     result = subprocess.run(
-        cmd,
+        ["cmd", "/c", cmd_str],
         text=True,
         capture_output=True,
         timeout=120,
+        env=env,
     )
     if result.returncode != 0:
         stderr_text = result.stderr.strip() if result.stderr else "(no stderr)"
