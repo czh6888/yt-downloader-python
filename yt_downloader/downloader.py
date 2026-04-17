@@ -12,9 +12,9 @@ import sys
 def find_yt_dlp():
     """Find yt-dlp executable. Prefers system yt-dlp command."""
     if shutil.which("yt-dlp"):
-        return ["yt-dlp"]
+        return [shutil.which("yt-dlp")]
     if shutil.which("yt-dlp.exe"):
-        return ["yt-dlp.exe"]
+        return [shutil.which("yt-dlp.exe")]
     if subprocess.run([sys.executable, "-m", "yt_dlp", "--version"],
                       capture_output=True).returncode == 0:
         return [sys.executable, "-m", "yt_dlp"]
@@ -54,15 +54,32 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
 
     if log_callback:
         log_callback("Fetching video info from YouTube...")
-        log_callback(f"yt-dlp: {' '.join(yt_dlp)}")
+        log_callback(f"yt-dlp path: {' '.join(yt_dlp)}")
         log_callback(f"Command: {' '.join(cmd)}")
+        if cookie_file and os.path.exists(cookie_file):
+            size = os.path.getsize(cookie_file)
+            first = open(cookie_file, encoding='utf-8').readline().strip()[:80]
+            log_callback(f"Cookie file: {size} bytes, header: {first}")
 
-    result = subprocess.run(cmd, capture_output=True, timeout=120)
+    # Use shell=True to match CMD execution environment
+    import shlex
+    shell_cmd = ' '.join(shlex.quote(a) for a in cmd)
+    result = subprocess.run(
+        shell_cmd,
+        text=True,
+        capture_output=True,
+        timeout=120,
+        stdin=subprocess.DEVNULL,
+        shell=True,
+    )
     if result.returncode != 0:
-        err = result.stderr.decode("utf-8", errors="replace") if result.stderr else "Unknown error"
-        raise RuntimeError(f"yt-dlp failed:\n{err}")
+        raise RuntimeError(
+            f"yt-dlp failed (exit {result.returncode}):\n"
+            f"STDERR: {result.stderr.strip()}\n"
+            f"STDOUT: {result.stdout.strip()}"
+        )
 
-    lines = result.stdout.decode("utf-8", errors="replace").strip().split("\n")
+    lines = result.stdout.strip().split("\n")
     info = json.loads(lines[0])
     return info
 
