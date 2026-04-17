@@ -46,7 +46,6 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
     cmd = yt_dlp + [
         "--no-warnings",
         "--dump-json",
-        "--list-formats",
         "--no-download",
     ]
 
@@ -66,30 +65,40 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
             first = open(cookie_file, encoding='utf-8').readline().strip()[:80]
             log_callback(f"Cookie file: {size} bytes, header: {first}")
 
-    # Use cmd.exe to exactly replicate CMD execution environment
-    cmd_str = " ".join(f'"{c}"' if " " in c else c for c in cmd)
-    env = dict(os.environ)
-    env["PYTHONIOENCODING"] = "utf-8"
-
-    result = subprocess.run(
-        ["cmd", "/c", cmd_str],
+    # Use Popen with merged stdout+stderr (same as download_video)
+    # GUI app has no console — Popen streaming matches CMD behavior
+    stdout_lines = []
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        capture_output=True,
-        timeout=120,
-        env=env,
+        encoding="utf-8",
+        errors="replace",
     )
-    if result.returncode != 0:
-        stderr_text = result.stderr.strip() if result.stderr else "(no stderr)"
-        stdout_text = result.stdout.strip() if result.stdout else "(no stdout)"
+
+    for line in process.stdout:
+        line = line.rstrip()
+        stdout_lines.append(line)
+        if log_callback and (line.startswith("[") or line.startswith("ERROR")):
+            log_callback(line)
+
+    process.wait()
+
+    if process.returncode != 0:
+        output = "\n".join(stdout_lines)
         raise RuntimeError(
-            f"yt-dlp failed (exit {result.returncode}):\n"
-            f"STDERR: {stderr_text}\n"
-            f"STDOUT: {stdout_text}"
+            f"yt-dlp failed (exit {process.returncode}):\n"
+            f"OUTPUT: {output[:1000]}"
         )
 
-    lines = result.stdout.strip().split("\n")
-    info = json.loads(lines[0])
-    return info
+    # Find JSON line (starts with {)
+    for line in stdout_lines:
+        if line.startswith("{"):
+            return json.loads(line)
+
+    output = "\n".join(stdout_lines)
+    raise RuntimeError(f"yt-dlp returned no JSON data:\n{output[:500]}")
 
 
 def get_resolution_list(info):
