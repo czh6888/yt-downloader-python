@@ -54,8 +54,10 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
 
     if log_callback:
         log_callback("Fetching video info from YouTube...")
+        log_callback(f"yt-dlp: {' '.join(yt_dlp)}")
+        log_callback(f"Command: {' '.join(cmd)}")
 
-    result = subprocess.run(cmd, capture_output=True, timeout=60)
+    result = subprocess.run(cmd, capture_output=True, timeout=120)
     if result.returncode != 0:
         err = result.stderr.decode("utf-8", errors="replace") if result.stderr else "Unknown error"
         raise RuntimeError(f"yt-dlp failed:\n{err}")
