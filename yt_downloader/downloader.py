@@ -10,16 +10,14 @@ import sys
 
 
 def find_yt_dlp():
-    """Find yt-dlp. Prefer pip-installed module, then system executable."""
-    # 1. pip-installed yt-dlp (version controlled by project requirements.txt)
-    result = subprocess.run(
-        [sys.executable, "-m", "yt_dlp", "--version"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode == 0:
-        return [sys.executable, "-m", "yt_dlp"]
+    """Find yt-dlp. Prefer bundled exe, then system executable."""
+    # 1. Bundled yt-dlp.exe shipped with the project
+    mod_dir = os.path.dirname(os.path.abspath(__file__))
+    bundled = os.path.join(mod_dir, "yt-dlp.exe")
+    if os.path.isfile(bundled):
+        return [bundled]
 
-    # 2. System yt-dlp executable
+    # 2. System yt-dlp executable as fallback
     path = shutil.which("yt-dlp") or shutil.which("yt-dlp.exe")
     if path:
         return [path]
