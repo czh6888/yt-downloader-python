@@ -503,36 +503,22 @@ def extract_firefox_cookies(cookie_file, log_callback=None):
             "Please make sure Firefox is installed."
         )
 
+    # Search all subdirectories for cookies.sqlite
     profile_path = None
     for entry in sorted(os.listdir(profiles_dir)):
         full = os.path.join(profiles_dir, entry)
-        if os.path.isdir(full) and (
-            entry.endswith(".default-release") or entry.endswith(".default")
-        ):
+        if os.path.isdir(full) and os.path.exists(os.path.join(full, "cookies.sqlite")):
             profile_path = full
             break
 
-    # Fallback: try any directory with cookies.sqlite
-    if not profile_path:
-        for entry in sorted(os.listdir(profiles_dir)):
-            full = os.path.join(profiles_dir, entry)
-            if os.path.isdir(full) and os.path.exists(os.path.join(full, "cookies.sqlite")):
-                profile_path = full
-                break
-
     if not profile_path:
         raise FileNotFoundError(
-            "No Firefox default profile found. Please open Firefox and log in first."
+            "No Firefox profile with cookies.sqlite found. Please open Firefox and log in first."
         )
 
     db_path = os.path.join(profile_path, "cookies.sqlite")
-    if not os.path.exists(db_path):
-        raise FileNotFoundError(
-            f"Firefox cookie database not found:\n{db_path}"
-        )
-
     if log_callback:
-        log_callback("Reading Firefox cookie database...")
+        log_callback(f"Reading Firefox cookie database: {db_path}")
 
     with tempfile.TemporaryDirectory() as td:
         tmp_db = os.path.join(td, "cookies.sqlite")
@@ -802,7 +788,13 @@ def extract_cookies(browser_name, cookie_file, log_callback=None):
     - (False, "Edge"): pass --cookies-from-browser edge
     """
     if browser_name == "Firefox":
-        return extract_firefox_cookies(cookie_file, log_callback)
+        try:
+            return extract_firefox_cookies(cookie_file, log_callback)
+        except (FileNotFoundError, Exception) as e:
+            if log_callback:
+                log_callback(f"Firefox direct extraction failed: {e}")
+                log_callback("Falling back to --cookies-from-browser firefox...")
+            return (False, "firefox")
     elif browser_name in BROWSERS:
         # Chrome, Edge, and other Chromium browsers
         # Try unified decrypt_chromium.py first (v20+v10+DPAPI+plaintext)
