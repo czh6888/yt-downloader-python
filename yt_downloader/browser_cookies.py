@@ -501,6 +501,14 @@ def extract_firefox_cookies(cookie_file, log_callback=None):
             profile_path = full
             break
 
+    # Fallback: try any directory with cookies.sqlite
+    if not profile_path:
+        for entry in sorted(os.listdir(profiles_dir)):
+            full = os.path.join(profiles_dir, entry)
+            if os.path.isdir(full) and os.path.exists(os.path.join(full, "cookies.sqlite")):
+                profile_path = full
+                break
+
     if not profile_path:
         raise FileNotFoundError(
             "No Firefox default profile found. Please open Firefox and log in first."

@@ -167,7 +167,20 @@ def main():
         con.close()
 
         v20 = [c for c in all_cookies if len(c[2]) > 3 and c[2][:3] == b"v20"]
-        print(f"  Total: {len(all_cookies)}, v20: {len(v20)}")
+        v10 = [c for c in all_cookies if len(c[2]) > 3 and c[2][:3] == b"v10"]
+        print(f"  Total: {len(all_cookies)}, v20: {len(v20)}, v10: {len(v10)}")
+
+    # Derive v10 AES-GCM key from os_crypt.encrypted_key
+    v10_cipher = None
+    try:
+        enc_key_b64 = ls["os_crypt"]["encrypted_key"]
+        import base64 as _b64
+        enc_key_raw = _b64.b64decode(enc_key_b64)
+        if enc_key_raw[:5] == b"DPAPI":
+            v10_key = windows.crypto.dpapi.unprotect(enc_key_raw[5:])
+            v10_cipher = AESGCM(v10_key)
+    except Exception:
+        pass
 
         cipher = AESGCM(master_key)
         result = []
@@ -177,6 +190,14 @@ def main():
             if len(ev) > 3 and ev[:3] == b"v20":
                 try:
                     val = decrypt_cookie_val(cipher, ev)
+                    result.append((c[0], c[1], val, c[3], c[4], str(c[5] or 0)))
+                except Exception:
+                    failed += 1
+            elif len(ev) > 3 and ev[:3] == b"v10" and v10_cipher is not None:
+                try:
+                    iv, ct_tag = ev[3:15], ev[15:]
+                    pt = v10_cipher.decrypt(iv, ct_tag, None)
+                    val = pt.decode('utf-8')
                     result.append((c[0], c[1], val, c[3], c[4], str(c[5] or 0)))
                 except Exception:
                     failed += 1
