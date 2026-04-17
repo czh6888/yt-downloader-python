@@ -803,8 +803,9 @@ def extract_cookies(browser_name, cookie_file, log_callback=None):
     """
     if browser_name == "Firefox":
         return extract_firefox_cookies(cookie_file, log_callback)
-    elif browser_name in ("Chrome", "Edge"):
-        # Try unified decrypt_chromium.py first (no injection)
+    elif browser_name in BROWSERS:
+        # Chrome, Edge, and other Chromium browsers
+        # Try unified decrypt_chromium.py first (v20+v10+DPAPI+plaintext)
         result = extract_chromium_cookies(browser_name, cookie_file, log_callback)
         if result[0]:
             return result
@@ -813,4 +814,4 @@ def extract_cookies(browser_name, cookie_file, log_callback=None):
             log_callback(f"Unified decrypt failed for {browser_name}, trying chromelevator...")
         return extract_chromium_with_chromelevator(browser_name, cookie_file, log_callback)
     else:
-        return extract_chromium_cookies(browser_name, cookie_file, log_callback)
+        return (False, browser_name)
