@@ -168,7 +168,8 @@ def main():
 
         v20 = [c for c in all_cookies if len(c[2]) > 3 and c[2][:3] == b"v20"]
         v10 = [c for c in all_cookies if len(c[2]) > 3 and c[2][:3] == b"v10"]
-        print(f"  Total: {len(all_cookies)}, v20: {len(v20)}, v10: {len(v10)}")
+        dpapi = [c for c in all_cookies if len(c[2]) > 5 and c[2][0] == 1]
+        print(f"  Total: {len(all_cookies)}, v20: {len(v20)}, v10: {len(v10)}, dpapi: {len(dpapi)}")
 
     # Derive v10 AES-GCM key from os_crypt.encrypted_key
     v10_cipher = None
@@ -198,6 +199,12 @@ def main():
                     iv, ct_tag = ev[3:15], ev[15:]
                     pt = v10_cipher.decrypt(iv, ct_tag, None)
                     val = pt.decode('utf-8')
+                    result.append((c[0], c[1], val, c[3], c[4], str(c[5] or 0)))
+                except Exception:
+                    failed += 1
+            elif len(ev) > 5 and ev[0] == 1:
+                try:
+                    val = windows.crypto.dpapi.unprotect(ev[1:]).decode('utf-8')
                     result.append((c[0], c[1], val, c[3], c[4], str(c[5] or 0)))
                 except Exception:
                     failed += 1
