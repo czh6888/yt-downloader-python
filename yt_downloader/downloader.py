@@ -10,26 +10,21 @@ import sys
 
 
 def find_yt_dlp():
-    """Find all yt-dlp executables in PATH, return the newest version."""
-    candidates = []
-    for name in ("yt-dlp", "yt-dlp.exe"):
-        for dir_path in os.environ.get("PATH", "").split(os.pathsep):
-            full = os.path.join(dir_path, name)
-            if os.path.isfile(full):
-                result = subprocess.run(
-                    [full, "--version"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0:
-                    ver = result.stdout.strip()
-                    candidates.append((ver, full))
+    """Find yt-dlp. Prefer pip-installed module, then system executable."""
+    # 1. pip-installed yt-dlp (version controlled by project requirements.txt)
+    result = subprocess.run(
+        [sys.executable, "-m", "yt_dlp", "--version"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode == 0:
+        return [sys.executable, "-m", "yt_dlp"]
 
-    if not candidates:
-        return None
+    # 2. System yt-dlp executable
+    path = shutil.which("yt-dlp") or shutil.which("yt-dlp.exe")
+    if path:
+        return [path]
 
-    # Sort by version string descending, pick newest
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    return [candidates[0][1]]
+    return None
 
 
 def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
