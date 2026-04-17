@@ -57,16 +57,12 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
             first = open(cookie_file, encoding='utf-8').readline().strip()[:80]
             log_callback(f"Cookie file: {size} bytes, header: {first}")
 
-    # Use shell=True to match CMD execution environment
-    import shlex
-    shell_cmd = ' '.join(shlex.quote(a) for a in cmd)
     result = subprocess.run(
-        shell_cmd,
+        cmd,
         text=True,
         capture_output=True,
         timeout=120,
         stdin=subprocess.DEVNULL,
-        shell=True,
     )
     if result.returncode != 0:
         raise RuntimeError(
