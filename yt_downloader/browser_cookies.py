@@ -46,6 +46,17 @@ def is_admin():
         return False
 
 
+def elevate():
+    """Re-launch current script as Administrator via UAC prompt."""
+    script = sys.argv[0]
+    params = " ".join([f'"{arg}"' for arg in sys.argv[1:]])
+    python_exe = sys.executable
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", python_exe, f'"{script}" {params}', None, 1
+    )
+    sys.exit(0)
+
+
 def rstrtmgr_copy(src, dst):
     """Copy a file using Restart Manager to release file locks."""
     rstrtmgr = ctypes.windll.LoadLibrary("Rstrtmgr")
