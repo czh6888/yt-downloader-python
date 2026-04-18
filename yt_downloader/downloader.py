@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
 def find_yt_dlp():
@@ -28,14 +29,8 @@ def find_yt_dlp():
 def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
     """Get available video formats from YouTube.
 
-    Args:
-        url: YouTube video URL
-        cookie_file: Path to Netscape cookie file
-        browser_native: Browser name for --cookies-from-browser, or None
-        log_callback: Optional logging callback
-
-    Returns:
-        dict: yt-dlp JSON info
+    Strategy: write JSON output to a temp file, then read it back.
+    This avoids pipe buffering / handle issues in GUI subprocess.
     """
     yt_dlp = find_yt_dlp()
     if not yt_dlp:
@@ -43,10 +38,16 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
             "yt-dlp not found. Install with:\npip install yt-dlp\nor\nwinget install yt-dlp"
         )
 
+    # Create temp files for stdout and stderr
+    tmpdir = tempfile.mkdtemp(prefix="ytdlp_")
+    stdout_file = os.path.join(tmpdir, "stdout.txt")
+    stderr_file = os.path.join(tmpdir, "stderr.txt")
+
     cmd = yt_dlp + [
         "--no-warnings",
         "--dump-json",
         "--no-download",
+        "-o", "NUL",
     ]
 
     if browser_native:
@@ -65,40 +66,55 @@ def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
             first = open(cookie_file, encoding='utf-8').readline().strip()[:80]
             log_callback(f"Cookie file: {size} bytes, header: {first}")
 
-    # Use Popen with merged stdout+stderr (same as download_video)
-    # GUI app has no console — Popen streaming matches CMD behavior
-    stdout_lines = []
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+    # Use shell=True to exactly replicate CMD execution
+    cmd_str = " ".join(f'"{c}"' if " " in c else c for c in cmd)
+    cmd_str += f" > \"{stdout_file}\" 2> \"{stderr_file}\""
+
+    if log_callback:
+        log_callback(f"Shell command: {cmd_str}")
+
+    result = subprocess.run(
+        cmd_str,
         text=True,
-        encoding="utf-8",
-        errors="replace",
+        shell=True,
+        timeout=120,
     )
 
-    for line in process.stdout:
-        line = line.rstrip()
-        stdout_lines.append(line)
-        if log_callback and (line.startswith("[") or line.startswith("ERROR")):
-            log_callback(line)
+    # Read outputs from files
+    stdout_text = ""
+    stderr_text = ""
+    try:
+        with open(stdout_file, "r", encoding="utf-8") as f:
+            stdout_text = f.read()
+    except Exception:
+        pass
+    try:
+        with open(stderr_file, "r", encoding="utf-8") as f:
+            stderr_text = f.read()
+    except Exception:
+        pass
 
-    process.wait()
+    # Clean up temp files
+    try:
+        os.remove(stdout_file)
+        os.remove(stderr_file)
+        os.rmdir(tmpdir)
+    except Exception:
+        pass
 
-    if process.returncode != 0:
-        output = "\n".join(stdout_lines)
+    if result.returncode != 0:
         raise RuntimeError(
-            f"yt-dlp failed (exit {process.returncode}):\n"
-            f"OUTPUT: {output[:1000]}"
+            f"yt-dlp failed (exit {result.returncode}):\n"
+            f"STDERR: {stderr_text.strip()[:1000]}\n"
+            f"STDOUT: {stdout_text.strip()[:500]}"
         )
 
-    # Find JSON line (starts with {)
-    for line in stdout_lines:
+    # Find JSON line
+    for line in stdout_text.strip().split("\n"):
         if line.startswith("{"):
             return json.loads(line)
 
-    output = "\n".join(stdout_lines)
-    raise RuntimeError(f"yt-dlp returned no JSON data:\n{output[:500]}")
+    raise RuntimeError(f"yt-dlp returned no JSON data:\nSTDOUT: {stdout_text[:500]}\nSTDERR: {stderr_text[:500]}")
 
 
 def get_resolution_list(info):
