@@ -12,13 +12,11 @@ import tempfile
 
 def find_yt_dlp():
     """Find yt-dlp. Prefer bundled exe, then system executable."""
-    # 1. Bundled yt-dlp.exe shipped with the project
     mod_dir = os.path.dirname(os.path.abspath(__file__))
     bundled = os.path.join(mod_dir, "yt-dlp.exe")
     if os.path.isfile(bundled):
         return [bundled]
 
-    # 2. System yt-dlp executable as fallback
     path = shutil.which("yt-dlp") or shutil.which("yt-dlp.exe")
     if path:
         return [path]
@@ -29,92 +27,90 @@ def find_yt_dlp():
 def fetch_formats(url, cookie_file, browser_native=None, log_callback=None):
     """Get available video formats from YouTube.
 
-    Strategy: write JSON output to a temp file, then read it back.
-    This avoids pipe buffering / handle issues in GUI subprocess.
+    Uses ytdlp_helper.py (run via python.exe) to ensure yt-dlp
+    has a proper console for JS challenge solving.
     """
-    yt_dlp = find_yt_dlp()
-    if not yt_dlp:
-        raise RuntimeError(
-            "yt-dlp not found. Install with:\npip install yt-dlp\nor\nwinget install yt-dlp"
-        )
+    mod_dir = os.path.dirname(os.path.abspath(__file__))
+    helper = os.path.join(mod_dir, "ytdlp_helper.py")
 
-    # Create temp files for stdout and stderr
-    tmpdir = tempfile.mkdtemp(prefix="ytdlp_")
-    stdout_file = os.path.join(tmpdir, "stdout.txt")
-    stderr_file = os.path.join(tmpdir, "stderr.txt")
+    python_exe = _find_python_exe()
 
-    cmd = yt_dlp + [
-        "--no-warnings",
-        "--dump-json",
-        "--no-download",
-        "-o", "NUL",
-    ]
+    cookie_arg = cookie_file if (cookie_file and os.path.exists(cookie_file)) else "NONE"
+    browser_arg = browser_native if browser_native else "NONE"
+    out_file = os.path.join(tempfile.gettempdir(), f"ytdlp_out_{os.getpid()}.json")
 
-    if browser_native:
-        cmd += ["--cookies-from-browser", browser_native]
-    elif cookie_file and os.path.exists(cookie_file):
-        cmd += ["--cookies", cookie_file]
-
-    cmd += [url]
+    cmd = [python_exe, helper, cookie_arg, browser_arg, url, out_file]
 
     if log_callback:
         log_callback("Fetching video info from YouTube...")
-        log_callback(f"yt-dlp path: {' '.join(yt_dlp)}")
-        log_callback(f"Command: {' '.join(cmd)}")
+        log_callback(f"Helper command: {' '.join(cmd)}")
         if cookie_file and os.path.exists(cookie_file):
             size = os.path.getsize(cookie_file)
             first = open(cookie_file, encoding='utf-8').readline().strip()[:80]
             log_callback(f"Cookie file: {size} bytes, header: {first}")
 
-    # Use shell=True to exactly replicate CMD execution
-    cmd_str = " ".join(f'"{c}"' if " " in c else c for c in cmd)
-    cmd_str += f" > \"{stdout_file}\" 2> \"{stderr_file}\""
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
 
-    if log_callback:
-        log_callback(f"Shell command: {cmd_str}")
+    # Use CREATE_NEW_CONSOLE if parent has no console (pythonw.exe)
+    creationflags = 0
+    if sys.executable and "pythonw" in sys.executable.lower():
+        creationflags = subprocess.CREATE_NEW_CONSOLE
 
     result = subprocess.run(
-        cmd_str,
+        cmd,
         text=True,
-        shell=True,
+        capture_output=True,
         timeout=120,
+        env=env,
+        creationflags=creationflags,
     )
 
-    # Read outputs from files
-    stdout_text = ""
-    stderr_text = ""
-    try:
-        with open(stdout_file, "r", encoding="utf-8") as f:
-            stdout_text = f.read()
-    except Exception:
-        pass
-    try:
-        with open(stderr_file, "r", encoding="utf-8") as f:
-            stderr_text = f.read()
-    except Exception:
-        pass
+    if log_callback and result.stdout.strip():
+        log_callback(result.stdout.strip()[:300])
+    if log_callback and result.stderr.strip():
+        log_callback(f"Helper stderr: {result.stderr.strip()[:300]}")
 
-    # Clean up temp files
-    try:
-        os.remove(stdout_file)
-        os.remove(stderr_file)
-        os.rmdir(tmpdir)
-    except Exception:
-        pass
+    # Read result from output file
+    info = None
+    if os.path.exists(out_file):
+        try:
+            with open(out_file, "r", encoding="utf-8") as f:
+                info = json.load(f)
+        except Exception:
+            pass
+        try:
+            os.remove(out_file)
+        except Exception:
+            pass
 
-    if result.returncode != 0:
+    if info and "error" in info:
+        raise RuntimeError(f"yt-dlp error: {info['error']}")
+
+    if not info:
         raise RuntimeError(
-            f"yt-dlp failed (exit {result.returncode}):\n"
-            f"STDERR: {stderr_text.strip()[:1000]}\n"
-            f"STDOUT: {stdout_text.strip()[:500]}"
+            f"yt-dlp returned no data.\n"
+            f"Helper stdout: {result.stdout[:500]}\n"
+            f"Helper stderr: {result.stderr[:500]}"
         )
 
-    # Find JSON line
-    for line in stdout_text.strip().split("\n"):
-        if line.startswith("{"):
-            return json.loads(line)
+    return info
 
-    raise RuntimeError(f"yt-dlp returned no JSON data:\nSTDOUT: {stdout_text[:500]}\nSTDERR: {stderr_text[:500]}")
+
+def _find_python_exe():
+    """Find python.exe (console version), not pythonw.exe."""
+    # If current interpreter is pythonw.exe, find corresponding python.exe
+    exe = sys.executable or ""
+    if "pythonw" in exe.lower():
+        pythonw_dir = os.path.dirname(exe)
+        python_exe = os.path.join(pythonw_dir, "python.exe")
+        if os.path.isfile(python_exe):
+            return python_exe
+    # Otherwise use sys.executable or fallback to python.exe in PATH
+    if exe and os.path.isfile(exe):
+        return exe
+    path = shutil.which("python.exe") or shutil.which("python")
+    return path or "python"
 
 
 def get_resolution_list(info):
